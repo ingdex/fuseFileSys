@@ -1,0 +1,23 @@
+static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
+                    struct fuse_file_info *fi)
+{
+    int fd;
+    int res;
+    (void) fi;
+    fd = open(path, O_WRONLY);
+    if (fd == -1)
+        return -errno;
+    if( size == 4096 && sizeof(buf)-offset-10-sizeof(path)>=4096){//不是最后一块，因为有特殊情况
+        res = pread(fd, buf, 4088, offset);
+    }
+    else if(size == 4096){
+        res = pread(fd, buf, sizeof(buf)-offset-10-sizeof(path)-8, offset);//因为已经是去除尾部后的情况了，全读了即可
+    }
+    else {
+        res = pread(fd, buf, size-10-sizeof(path), offset);//因为已经最后一种，最后一个数据块有用户数据的情况，去掉尾部即可。
+    }
+    if (res == -1)
+        res = -errno;
+    close(fd);
+    return res;
+}
