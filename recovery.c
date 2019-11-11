@@ -282,12 +282,12 @@ static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
     off_t loffset = offset;//逻辑偏移
     offset = offset/4088*4096+offset%4088;
     int fd;
-    int res;
+    int res = 0;
     (void) fi;
     fd = open(path, O_RDONLY);
     if (fd == -1)
         return -errno;
-    size_t last = 4088-offset%4088;  //当前文件指针所在块剩余数据大小
+    size_t last = 4088-loffset%4088;  //当前文件指针所在块剩余数据大小
     size_t left = size; //剩余需要读取的数据大小
     size_t inoff = 0;   //当前已经读取的文件大小，用于偏移值计算
 //    char blk[4096];
@@ -296,6 +296,7 @@ static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
     printf("path:%s\n", path);
     printf("size:%lu\n", size);
     printf("offset:%lu\n", offset);
+    printf("loffset:%lu\n", loffset);
     printf("inoff:%lu\n", inoff);
     printf("last:%lu\n", last);
     printf("left:%lu\n", left);
@@ -307,7 +308,7 @@ static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
     // 11b代表此为只有NRM的数据块
     if (size <= last)   //需要读取的数据较少，在当前文件指针所在块即可全部读取
     {
-        res = pread(fd, buf, last+8, offset);//将最后一块全部读出
+        res = pread(fd, buf+res, last+8, offset);//将最后一块全部读出
         if (res == -1)
         {
             res = -errno;
@@ -315,10 +316,16 @@ static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
                 close(fd);
             return res;
         }
+        else if (res == 0)
+        {
+            if(fi == NULL)
+                close(fd);
+            return res;
+        }
         char flag = buf[last];
         if (((flag>>30)&0x3) == 0x3)//读到的是只有NRM的块
         {
-            res = -errno;
+            res = 0;
             if(fi == NULL)
                 close(fd);
             return res;
@@ -328,15 +335,22 @@ static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
         //debug
         printf("\n--------------------\n");
         printf("1");
+        printf("res:%d\n", res);
         printf("buf:%s", buf);
         printf("\n--------------------\n");
     }
     else //需要读取的数据跨越4k块边界
     {
-        res = pread(fd, buf, last+8, offset);//将最后一块全部读出
+        res = pread(fd, buf+res, last+8, offset);//将最后一块全部读出
         if (res == -1)
         {
             res = -errno;
+            if(fi == NULL)
+                close(fd);
+            return res;
+        }
+        else if (res == 0)
+        {
             if(fi == NULL)
                 close(fd);
             return res;
@@ -350,7 +364,7 @@ static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
             return res;
         }
         unsigned int off = *(unsigned int *)&buf[last+4];
-        res = off-loffset;
+        res = off - loffset;
         inoff = inoff + last + 8;//偏移值计算需要带上FRM
         left -= last;
         //debug
@@ -369,16 +383,34 @@ static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
                 left = 0;
                 break;
             }
+            else if (tmp == 0)
+            {
+                if(fi == NULL)
+                    close(fd);
+                return res;
+            }
             inoff += 4096;
             left -= 4088;
             flag = buf[res+4088];
             off = *(unsigned int *)&buf[res+4088+4];
+            printf("\n--------------------\n");
+            printf("22\n");
+            printf("res:%d\n", res);
+            printf("flag:%X\n", (int)flag);
+            printf("inoff:%lu\n", inoff);
+            printf("left:%lu\n", left);
+            printf("flag:%c", flag);
+            printf("\n--------------------\n");
             if (((flag>>30)&0x3) == 0x3)//读到的是只有NRM的块
             {
+                printf("\n--------------------\n");
+                printf("22\n");
+                printf("(flag>>30)&0x3) == 0x3");
+                printf("\n--------------------\n");
                 left = 0;
                 break;
             }
-            res += (off - loffset);
+            res += (off - res);
             printf("\n--------------------\n");
             printf("3\n");
             printf("res:%d\n", res);
@@ -390,19 +422,25 @@ static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
         if (left > 0)
         {
             int tmp = pread(fd, buf+res, 4096, offset+inoff);
-            if (tmp != -1)
+            if (tmp > 0)
             {
+                printf("\n--------------------\n");
+                printf("44\n");
+                printf("tmp:%d\n", tmp);
+                printf("buf:%s", buf);
+                printf("\n--------------------\n");
                 flag = buf[res+4088];
                 off = *(unsigned int *)&buf[res+4088+4];
                 if (((flag>>30)&0x3) != 0x3)//读到的不是只有NRM的块
                 {
-                    res += (off-loffset)<tmp?(off-loffset):tmp;
+                    res += (off-res)<tmp?(off-res):tmp;
                 }
             }
 
             printf("\n--------------------\n");
             printf("4\n");
             printf("res:%d\n", res);
+            printf("tmp:%d\n", tmp);
             printf("inoff:%lu\n", inoff);
             printf("left:%lu\n", left);
             printf("buf:%s", buf);
@@ -459,7 +497,7 @@ static int xmp_write(const char *path, const char *buf, size_t size,
     printf("buf:%s", buf);
 //    printf("%x %x %x %x %x %x %x %x\n", FRM[0], FRM[1], FRM[2], FRM[3], FRM[4], FRM[5], FRM[6], FRM[7]);
     printf("\n--------------------\n");
-    while( size - inoff >= 4088 ){//如果还有一整块
+    while( size - res >= 4088 ){//如果还有一整块
         //debug
         printf("\n--------------------\n");
         printf("size - inoff >= 4088\n");
@@ -532,13 +570,20 @@ static int xmp_write(const char *path, const char *buf, size_t size,
     // 11b代表此为只有NRM的数据块
     //(offset + inoff)%4096 + sizeof(int) + strlen(path)+1 + 8 = (文件实际物理偏移起始位置+已写实际物理文件大小)%4096 + NRM大小 + FRN大小
     if((offset + inoff)%4096 + sizeof(int) + strlen(path)+1 + 8 <= 4096){//这种情况是指，地址只在一块中的情况
+        //结尾块FRM
+        if ((offset+inoff)%4096 == 0)   //数据刚好写整数块，即最后一块只存放NRM和FRM
+        {
+            FRM[0] = 0xC0 | (0x3f & FRM[0]);
+        }
+        else
+        {
+            FRM[0] = 0x40 | (0x3f & FRM[0]);
+        }
+        *(unsigned int *)&FRM[4] = offset+res;
         datasize = pwrite(fd, (char *)&length, sizeof(int), offset+inoff);
         inoff += sizeof(int);
         datasize = pwrite(fd, path, strlen(path)+1, offset+inoff);
         inoff += strlen(path)+1;
-        //结尾块FRM
-        FRM[0] = 0x40 | (0x3f & FRM[0]);
-        *(unsigned int *)&FRM[4] = offset+res;
         datasize = pwrite(fd, FRM, 8, offset+inoff+4096-(offset+inoff)%4096-8);
         //debug
         printf("\n--------------------\n");
